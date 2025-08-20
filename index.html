@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Place Photo Finder • Pexels</title>
+    <meta name="description" content="Search a place (e.g., Eiffel Tower) and view 5 beautiful photos powered by the Pexels API." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="container">
+        <h1 class="title">Place Photo Finder</h1>
+        <p class="subtitle">Type a place (e.g., <strong>Eiffel Tower</strong>) to instantly see 5 photos from Pexels.</p>
+
+        <form id="search-form" class="search" autocomplete="off">
+          <div class="search-bar">
+            <input
+              id="search-input"
+              type="text"
+              placeholder="Search a place (e.g., Eiffel Tower)"
+              aria-label="Search for a place"
+              required
+            />
+            <button id="search-button" class="btn" type="submit" aria-label="Search">Search</button>
+          </div>
+          
+        </form>
+      </div>
+    </header>
+
+    <main class="container">
+      <section id="status" class="status" aria-live="polite"></section>
+      <section class="results-split">
+        <div class="results-panel">
+          <h3 class="panel-title">Pexels</h3>
+          <div id="results" class="grid" aria-label="Pexels results"></div>
+        </div>
+        <div class="results-panel">
+          <h3 class="panel-title">TripAdvisor</h3>
+          <div id="ta-results" class="grid" aria-label="TripAdvisor results"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <div class="container">
+        <span>
+          Photos provided by
+          <a href="https://www.pexels.com" target="_blank" rel="noopener">Pexels</a>.
+        </span>
+      </div>
+    </footer>
+
+    <script>
+      // Provide API key at runtime: localStorage.PEXELS_API_KEY or via server-side env (Streamlit)
+      window.PEXELS_API_KEY = window.localStorage.getItem('PEXELS_API_KEY') || '';
+    </script>
+    <script src="./script.js" defer></script>
+  </body>
+  </html>
+
