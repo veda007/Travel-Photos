@@ -20,7 +20,11 @@ st.markdown(
 )
 
 @st.cache_data(ttl=3600)
-def tripadvisor_search(query: str, limit: int = 3):
+def get_tripadvisor_images(query: str, limit: int = 3):
+    """
+    Server-side function that makes API calls and returns only image URLs.
+    API key is never exposed to the client.
+    """
     api_key = st.secrets.get("TRIPADVISOR_API_KEY") or os.environ.get("TRIPADVISOR_API_KEY")
     if not api_key:
         raise RuntimeError("Missing TRIPADVISOR_API_KEY (Streamlit secret or env var)")
@@ -35,31 +39,48 @@ def tripadvisor_search(query: str, limit: int = 3):
         headers["Referer"] = app_origin
         headers["Origin"] = app_origin
 
-    # Search locations for the query (attractions category)
-    search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
-    search_params = {"key": api_key, "searchQuery": query, "language": "en", "category": "attractions"}
-    search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
-    search_resp.raise_for_status()
-    search_data = search_resp.json()
-    locations = (search_data.get("data") or [])
-    if not locations:
+    try:
+        # Search locations for the query (attractions category)
+        search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
+        search_params = {"key": api_key, "searchQuery": query, "language": "en", "category": "attractions"}
+        search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
+        search_resp.raise_for_status()
+        search_data = search_resp.json()
+        locations = (search_data.get("data") or [])
+        
+        if not locations:
+            return []
+
+        # Pick ONLY the first location and fetch up to `limit` photos
+        first_loc_id = locations[0].get("location_id")
+        if not first_loc_id:
+            return []
+
+        photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{first_loc_id}/photos"
+        photos_params = {"key": api_key, "language": "en", "limit": limit}
+        photos_resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
+        photos_resp.raise_for_status()
+        photos_data = photos_resp.json()
+        photos = (photos_data.get("data") or [])[:limit]
+        
+        # Extract and return only image URLs (no API key exposure)
+        image_urls = []
+        for photo in photos:
+            url = extract_ta_original_url(photo)
+            if url:
+                image_urls.append(url)
+        
+        return image_urls
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"API request failed: {str(e)}")
         return []
-
-    # Pick ONLY the first location and fetch up to `limit` photos
-    first_loc_id = locations[0].get("location_id")
-    if not first_loc_id:
+    except Exception as e:
+        st.error(f"Unexpected error: {str(e)}")
         return []
-
-    photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{first_loc_id}/photos"
-    photos_params = {"key": api_key, "language": "en", "limit": limit}
-    photos_resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
-    photos_resp.raise_for_status()
-    photos_data = photos_resp.json()
-    return (photos_data.get("data") or [])[:limit]
-
-# Helpers to extract TripAdvisor image URLs
 
 def extract_ta_original_url(photo: dict):
+    """Helper function to extract image URLs from TripAdvisor photo data"""
     images = photo.get("images")
     if not images:
         return None
@@ -81,37 +102,25 @@ def extract_ta_original_url(photo: dict):
                 return url
     return None
 
-st.title("TripAdvisor Photo Finder")
-st.markdown('<p class="subhead">Type a place to view original photos</p>', unsafe_allow_html=True)
+st.title("Photo Finder")
+st.markdown('<p class="subhead">Type an attraction to view original photos</p>', unsafe_allow_html=True)
 
 with st.form("search_form"):
-    query = st.text_input("Search a place", value="Eiffel Tower", placeholder="Eiffel Tower")
+    query = st.text_input("Search an attraction", value="Eiffel Tower", placeholder="Eiffel Tower")
     submitted = st.form_submit_button("Search")
 
 if submitted and query.strip():
     q = query.strip()
     with st.spinner("Fetching images…"):
-        try:
-            ta_photos = tripadvisor_search(q, limit=3)
-        except Exception as e:
-            st.error(f"TripAdvisor error: {str(e)}")
-            ta_photos = []
+        # Server-side API call - API key never exposed to client
+        image_urls = get_tripadvisor_images(q, limit=3)
 
-    # Display images
-    if not ta_photos:
+    # Display images (only URLs are sent to client)
+    if not image_urls:
         st.info("No TripAdvisor images found")
     else:
-        photo_urls = []
-        for p in ta_photos:
-            u = extract_ta_original_url(p)
-            if u:
-                photo_urls.append(u)
-        
-        if photo_urls:
-            cols = st.columns(3)
-            for i, url in enumerate(photo_urls):
-                with cols[i % 3]:
-                    st.image(url, use_column_width=True)
-        else:
-            st.info("No valid images found")
+        cols = st.columns(3)
+        for i, url in enumerate(image_urls):
+            with cols[i % 3]:
+                st.image(url, use_column_width=True)
 
