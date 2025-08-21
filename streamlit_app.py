@@ -25,64 +25,38 @@ def tripadvisor_search(query: str, max_results: int = 10):
     api_key = st.secrets.get("TRIPADVISOR_API_KEY") or os.environ.get("TRIPADVISOR_API_KEY")
     if not api_key:
         raise RuntimeError("Missing TRIPADVISOR_API_KEY (Streamlit secret or env var)")
-    
+
     headers = {
         "accept": "application/json",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
-    
-    try:
-        # Step 1: Search for locations
-        search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
-        search_params = {
-            "key": api_key,
-            "searchQuery": query,
-            "language": "en"
-        }
-        search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
-        search_resp.raise_for_status()
-        search_data = search_resp.json()
-        
-        if not search_data.get("data"):
-            return []
-        
-        # Step 2: Get photos for the first location
-        location_id = search_data["data"][0]["location_id"]
-        photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{location_id}/photos"
-        photos_params = {
-            "key": api_key,
-            "language": "en"
-        }
-        photos_resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
-        photos_resp.raise_for_status()
-        photos_data = photos_resp.json()
-        
-        return photos_data.get("data", [])[:max_results]
-    except Exception as e:
-        # Fallback: return mock data for localhost testing
-        if "localhost" in str(e) or "403" in str(e) or "domain" in str(e).lower():
-            return [
-                {
-                    "id": f"mock_{i}",
-                    "caption": f"Mock TripAdvisor photo {i+1} for {query}",
-                    "location": query,
-                    "published_date": "2024-01-01",
-                    "user": {"username": "mock_user"},
-                    "rating": 4.5,
-                    "helpful_votes": 10,
-                    "is_video": False,
-                    "is_owner": False,
-                    "is_anonymous": False,
-                    "images": {
-                        "original": {
-                            "url": f"https://picsum.photos/400/300?random={i}&blur=2"
-                        }
-                    }
-                }
-                for i in range(max_results)
-            ]
-        else:
-            raise e
+
+    # Step 1: Search for locations
+    search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
+    search_params = {
+        "key": api_key,
+        "searchQuery": query,
+        "language": "en"
+    }
+    search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
+    search_resp.raise_for_status()
+    search_data = search_resp.json()
+
+    if not search_data.get("data"):
+        return []
+
+    # Step 2: Get photos for the first location
+    location_id = search_data["data"][0]["location_id"]
+    photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{location_id}/photos"
+    photos_params = {
+        "key": api_key,
+        "language": "en"
+    }
+    photos_resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
+    photos_resp.raise_for_status()
+    photos_data = photos_resp.json()
+
+    return photos_data.get("data", [])[:max_results]
 
 
 @st.cache_data(ttl=3600)
@@ -137,6 +111,62 @@ def render_photo_card(image_url: str, caption: str = ""):
     st.image(image_url, use_column_width=True, caption=caption)
 
 
+def extract_ta_original_url(photo: dict) -> str | None:
+    images = photo.get("images")
+    if not images:
+        return None
+    # If API returns dict of sizes
+    if isinstance(images, dict):
+        original = images.get("original") or images.get("large") or images.get("medium") or images.get("small")
+        if isinstance(original, dict):
+            return original.get("url")
+        if isinstance(original, str):
+            return original
+        # Fallback: any dict value with url
+        for v in images.values():
+            if isinstance(v, dict) and v.get("url"):
+                return v.get("url")
+    # If API returns a list of image objects
+    if isinstance(images, list):
+        # Prefer the largest resolution if width/height available
+        sorted_imgs = sorted(
+            images,
+            key=lambda x: (x.get("width", 0) or 0) * (x.get("height", 0) or 0),
+            reverse=True,
+        )
+        for item in sorted_imgs:
+            url = item.get("url") or (item.get("source") or {}).get("url")
+            if url:
+                return url
+    return None
+
+
+def extract_ta_all_urls(photo: dict) -> list[str]:
+    urls: list[str] = []
+    images = photo.get("images")
+    if not images:
+        return urls
+    if isinstance(images, dict):
+        for v in images.values():
+            if isinstance(v, dict) and v.get("url"):
+                urls.append(v["url"])
+            elif isinstance(v, str):
+                urls.append(v)
+    elif isinstance(images, list):
+        for item in images:
+            url = item.get("url") or (item.get("source") or {}).get("url")
+            if url:
+                urls.append(url)
+    # Dedupe preserving order
+    seen = set()
+    unique_urls = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+    return unique_urls
+
+
 st.title("Place Photo Finder")
 st.markdown("Type a place and view images from Pexels, Wikipedia, and TripAdvisor.")
 
@@ -166,7 +196,7 @@ if submitted and query.strip():
         except Exception as e:
             ta_error = str(e)
 
-    col1, col2, col3 = st.columns(3, gap="large")
+    col1, col2 = st.columns(2, gap="large")
 
     with col1:
         st.subheader("Pexels (5)")
@@ -200,37 +230,25 @@ if submitted and query.strip():
                 with grid_cols[idx % 5]:
                     render_photo_card(img.get("src"), caption=img.get("alt", ""))
 
-    with col3:
-        st.subheader("TripAdvisor (10)")
-        if ta_error:
-            st.warning(f"TripAdvisor error: {ta_error}")
-        if not tripadvisor:
-            st.info("No TripAdvisor images")
-        else:
-            for idx, photo in enumerate(tripadvisor[:10]):
-                with st.expander(f"Photo {idx+1} - {photo.get('caption', 'No caption')}"):
-                    # Display image
-                    if photo.get("images"):
-                        img_url = photo["images"].get("original", {}).get("url")
-                        if img_url:
-                            st.image(img_url, use_column_width=True)
-                    
-                    # Display metadata
-                    st.write("**Metadata:**")
-                    metadata = {
-                        "Caption": photo.get("caption", "N/A"),
-                        "Location": photo.get("location", "N/A"),
-                        "Published Date": photo.get("published_date", "N/A"),
-                        "Photo ID": photo.get("id", "N/A"),
-                        "User": photo.get("user", {}).get("username", "N/A") if photo.get("user") else "N/A",
-                        "Rating": photo.get("rating", "N/A"),
-                        "Helpful Votes": photo.get("helpful_votes", "N/A"),
-                        "Is Video": photo.get("is_video", "N/A"),
-                        "Is Owner": photo.get("is_owner", "N/A"),
-                        "Is Anonymous": photo.get("is_anonymous", "N/A")
-                    }
-                    
-                    for key, value in metadata.items():
-                        if value != "N/A":
-                            st.write(f"**{key}:** {value}")
+    st.markdown("---")
+    st.subheader("TripAdvisor (10)")
+    if ta_error:
+        st.warning(f"TripAdvisor error: {ta_error}")
+    if not tripadvisor:
+        st.info("No TripAdvisor images")
+    else:
+        for idx, photo in enumerate(tripadvisor[:10]):
+            with st.expander(f"Photo {idx+1} - {photo.get('caption', 'No caption')}"):
+                # Original image (best available)
+                original_url = extract_ta_original_url(photo)
+                if original_url:
+                    st.image(original_url, use_column_width=True, caption="Original")
+                # All variants under images[]
+                all_urls = extract_ta_all_urls(photo)
+                if all_urls:
+                    st.write("Variants:")
+                    cols = st.columns(5)
+                    for n, u in enumerate(all_urls[:10]):
+                        with cols[n % 5]:
+                            st.image(u, use_column_width=True)
 
