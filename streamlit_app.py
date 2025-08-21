@@ -20,7 +20,7 @@ st.markdown(
 )
 
 @st.cache_data(ttl=3600)
-def tripadvisor_search(query: str, max_results: int = 10):
+def tripadvisor_search(query: str, max_results: int = 5):
     api_key = st.secrets.get("TRIPADVISOR_API_KEY") or os.environ.get("TRIPADVISOR_API_KEY")
     if not api_key:
         raise RuntimeError("Missing TRIPADVISOR_API_KEY (Streamlit secret or env var)")
@@ -35,7 +35,7 @@ def tripadvisor_search(query: str, max_results: int = 10):
         headers["Referer"] = app_origin
         headers["Origin"] = app_origin
 
-    # Search locations for the query
+    # Search locations for the query (restrict to attractions)
     search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
     search_params = {"key": api_key, "searchQuery": query, "language": "en", "category": "attractions"}
     search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
@@ -45,53 +45,17 @@ def tripadvisor_search(query: str, max_results: int = 10):
     if not locations:
         return []
 
-    # Cap locations to avoid excessive calls
-    max_locations = min(len(locations), max_results, 10)
-    locations = locations[:max_locations]
+    # Pick ONLY the first location and fetch up to 5 photos
+    first_loc_id = locations[0].get("location_id")
+    if not first_loc_id:
+        return []
 
-    def fetch_photos_for_location(loc_id: str, limit: int) -> list:
-        photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{loc_id}/photos"
-        photos_params = {"key": api_key, "language": "en", "limit": limit}
-        try:
-            resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
-            resp.raise_for_status()
-        except requests.HTTPError:
-            return []
-        data = resp.json()
-        return data.get("data", [])
-
-    photos: list = []
-    num_locations = len(locations)
-
-    if num_locations >= max_results:
-        # Take the first image from each of the first max_results locations
-        for loc in locations[:max_results]:
-            loc_id = loc.get("location_id")
-            if not loc_id:
-                continue
-            imgs = fetch_photos_for_location(loc_id, limit=1)
-            if imgs:
-                photos.append(imgs[0])
-        return photos
-
-    # Otherwise, distribute multiple images per location
-    base = max_results // num_locations
-    rem = max_results % num_locations
-    per_loc_counts = [base] * num_locations
-    for i in range(rem):
-        per_loc_counts[i] += 1
-
-    for loc, count in zip(locations, per_loc_counts):
-        loc_id = loc.get("location_id")
-        if not loc_id or count <= 0:
-            continue
-        imgs = fetch_photos_for_location(loc_id, limit=count)
-        if imgs:
-            photos.extend(imgs[:count])
-        if len(photos) >= max_results:
-            break
-
-    return photos[:max_results]
+    photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{first_loc_id}/photos"
+    photos_params = {"key": api_key, "language": "en", "limit": 5}
+    photos_resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
+    photos_resp.raise_for_status()
+    photos_data = photos_resp.json()
+    return (photos_data.get("data") or [])[:5]
 
 # Helpers to extract TripAdvisor image URLs
 
@@ -129,7 +93,7 @@ if submitted and query.strip():
     with st.spinner("Fetching images…"):
         ta_error = None
         try:
-            tripadvisor = tripadvisor_search(q, max_results=10)
+            tripadvisor = tripadvisor_search(q, max_results=5)
         except Exception as e:
             ta_error = str(e)
             tripadvisor = []
