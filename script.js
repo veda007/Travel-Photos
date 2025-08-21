@@ -6,7 +6,6 @@
     input: document.getElementById('search-input'),
     status: document.getElementById('status'),
     results: document.getElementById('results'),
-    taResults: document.getElementById('ta-results'),
   };
 
   function setStatus(message, tone = 'info') {
@@ -18,7 +17,6 @@
   function clearResults() {
     if (!elements.results) return;
     elements.results.innerHTML = '';
-    if (elements.taResults) elements.taResults.innerHTML = '';
   }
 
   function renderSkeleton(count) {
@@ -133,16 +131,7 @@
     return (filtered.concat(fallback).slice(0, 5));
   }
 
-  async function searchTripAdvisorImages(query) {
-    const url = new URL('/api/tripadvisor', window.location.origin);
-    url.searchParams.set('q', query);
-    const res = await fetch(url.toString());
-    if (!res.ok) {
-      throw new Error('TripAdvisor fetch failed');
-    }
-    const data = await res.json();
-    return Array.isArray(data.images) ? data.images : [];
-  }
+
 
   async function handleSearch(query) {
     const trimmed = String(query || '').trim();
@@ -152,46 +141,18 @@
     renderSkeleton(5);
 
     try {
-      const [photos, taPhotos] = await Promise.all([
-        searchPhotos(trimmed),
-        searchTripAdvisorImages(trimmed).catch(() => []),
-      ]);
+      const photos = await searchPhotos(trimmed);
       clearResults();
       if (!photos.length) {
         elements.results.innerHTML = '<div class="empty">No results. Try a different place.</div>';
         setStatus('');
-        // continue to show TA if available
+        return;
       }
 
       const fragment = document.createDocumentFragment();
       photos.forEach((p) => fragment.appendChild(createPhotoCard(p)));
       elements.results.appendChild(fragment);
       setStatus(`Showing ${photos.length} photo${photos.length === 1 ? '' : 's'} for “${trimmed}”.`);
-
-      if (elements.taResults) {
-        if (!taPhotos.length) {
-          elements.taResults.innerHTML = '<div class="empty">No TripAdvisor images found.</div>';
-        } else {
-          const frag2 = document.createDocumentFragment();
-          taPhotos.slice(0, 10).forEach((img) => {
-            const card = document.createElement('article');
-            card.className = 'photo-card';
-            const a = document.createElement('a');
-            a.href = img.src;
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer';
-            a.className = 'thumb';
-            const im = document.createElement('img');
-            im.src = img.src;
-            im.alt = img.alt || 'TripAdvisor image';
-            im.loading = 'lazy';
-            a.appendChild(im);
-            card.appendChild(a);
-            frag2.appendChild(card);
-          });
-          elements.taResults.appendChild(frag2);
-        }
-      }
     } catch (err) {
       clearResults();
       elements.results.innerHTML = `<div class="empty">${(err && err.message) || 'Something went wrong.'}</div>`;

@@ -14,7 +14,7 @@
     <header class="app-header">
       <div class="container">
         <h1 class="title">Place Photo Finder</h1>
-        <p class="subtitle">Type a place (e.g., <strong>Eiffel Tower</strong>) to instantly see 5 photos from Pexels.</p>
+        <p class="subtitle">Type a place (e.g., <strong>Eiffel Tower</strong>) to instantly see 5 photos from Pexels and 10 from Wikipedia.</p>
 
         <form id="search-form" class="search" autocomplete="off">
           <div class="search-bar">
@@ -34,16 +34,7 @@
 
     <main class="container">
       <section id="status" class="status" aria-live="polite"></section>
-      <section class="results-split">
-        <div class="results-panel">
-          <h3 class="panel-title">Pexels</h3>
-          <div id="results" class="grid" aria-label="Pexels results"></div>
-        </div>
-        <div class="results-panel">
-          <h3 class="panel-title">TripAdvisor</h3>
-          <div id="ta-results" class="grid" aria-label="TripAdvisor results"></div>
-        </div>
-      </section>
+      <section id="results" class="grid" aria-label="Search results"></section>
     </main>
 
     <footer class="app-footer">
@@ -56,7 +47,7 @@
     </footer>
 
     <script>
-      // Provide API key at runtime: localStorage.PEXELS_API_KEY or via server-side env (Streamlit)
+      // Set your Pexels API key via localStorage or server-side env
       window.PEXELS_API_KEY = window.localStorage.getItem('PEXELS_API_KEY') || '';
     </script>
     <script src="./script.js" defer></script>
