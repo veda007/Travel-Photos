@@ -2,7 +2,6 @@ node_modules/
 .DS_Store
 .venv/
 __pycache__/
-.streamlit/
 .env
 .vercel/
 .streamlit/secrets.toml
