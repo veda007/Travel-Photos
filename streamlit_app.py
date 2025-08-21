@@ -1,12 +1,6 @@
 import os
-import io
 import requests
 import streamlit as st
-from PIL import Image
-import numpy as np
-import torch
-from torchvision import transforms
-from transformers import CLIPProcessor, CLIPModel
 
 st.set_page_config(page_title="Place Photo Finder", page_icon="📷", layout="wide")
 
@@ -25,42 +19,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Image understanding with CLIP ---
-_device = "cuda" if torch.cuda.is_available() else "cpu"
-@st.cache_resource(show_spinner=False)
-def load_clip():
-    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(_device)
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-    return model, processor
-
-@st.cache_data(ttl=3600)
-def score_images_with_clip(query: str, image_urls: list[str], threshold: float = 0.18) -> list[str]:
-    if not image_urls:
-        return []
-    model, processor = load_clip()
-    kept = []
-    batch = []
-    mapping = []
-    # Process in small batches to save memory
-    for idx, url in enumerate(image_urls):
-        try:
-            img = Image.open(io.BytesIO(requests.get(url, timeout=12).content)).convert("RGB")
-            batch.append(img)
-            mapping.append(url)
-        except Exception:
-            continue
-        if len(batch) == 8 or idx == len(image_urls) - 1:
-            inputs = processor(text=[query]*len(batch), images=batch, return_tensors="pt", padding=True).to(_device)
-            with torch.no_grad():
-                outputs = model(**inputs)
-                # CLIP logits_per_image are similarity scores scaled; convert to probabilities
-                probs = outputs.logits_per_image.softmax(dim=1)[:, 0].detach().cpu().numpy()
-            for u, p in zip(mapping, probs):
-                if float(p) >= threshold:
-                    kept.append(u)
-            batch, mapping = [], []
-    return kept
-
 @st.cache_data(ttl=3600)
 def pexels_search(query: str, per_page: int = 5):
     api_key = st.secrets.get("PEXELS_API_KEY") or os.environ.get("PEXELS_API_KEY")
@@ -74,7 +32,7 @@ def pexels_search(query: str, per_page: int = 5):
     return data.get("photos", [])
 
 @st.cache_data(ttl=3600)
-def tripadvisor_search(query: str, max_results: int = 18):
+def tripadvisor_search(query: str, max_results: int = 10):
     api_key = st.secrets.get("TRIPADVISOR_API_KEY") or os.environ.get("TRIPADVISOR_API_KEY")
     if not api_key:
         raise RuntimeError("Missing TRIPADVISOR_API_KEY (Streamlit secret or env var)")
@@ -99,7 +57,7 @@ def tripadvisor_search(query: str, max_results: int = 18):
     if not locations:
         return []
 
-    max_locations = min(len(locations), max_results, 10)
+    max_locations = min(len(locations), max_results, 5)
     locations = locations[:max_locations]
 
     def fetch_photos_for_location(loc_id: str, limit: int) -> list:
@@ -117,6 +75,7 @@ def tripadvisor_search(query: str, max_results: int = 18):
     num_locations = len(locations)
 
     if num_locations >= max_results:
+        # Take the first image from each of the first max_results locations
         for loc in locations[:max_results]:
             loc_id = loc.get("location_id")
             if not loc_id:
@@ -126,6 +85,7 @@ def tripadvisor_search(query: str, max_results: int = 18):
                 photos.append(imgs[0])
         return photos
 
+    # Otherwise, distribute multiple images per location
     base = max_results // num_locations
     rem = max_results % num_locations
     per_loc_counts = [base] * num_locations
@@ -190,39 +150,25 @@ if submitted and query.strip():
         except Exception as e:
             ta_error = str(e)
 
-    # Build URL lists
-    pexels_urls = []
-    for photo in pexels:
-        src = (
-            photo.get("src", {}).get("large2x")
-            or photo.get("src", {}).get("large")
-            or photo.get("src", {}).get("medium")
-            or photo.get("src", {}).get("original")
-        )
-        if src:
-            pexels_urls.append(src)
-
-    ta_urls = []
-    for p in tripadvisor:
-        u = extract_ta_original_url(p)
-        if u:
-            ta_urls.append(u)
-
-    # CLIP-based filtering against the text query
-    kept_pexels = score_images_with_clip(q, pexels_urls, threshold=0.18)
-    kept_ta = score_images_with_clip(q, ta_urls, threshold=0.18)
-
     # Pexels section
     st.markdown("### Pexels")
     if pexels_error:
         st.warning(f"Pexels error: {pexels_error}")
-    if not kept_pexels:
-        st.info("No Pexels results after AI matching")
+    if not pexels:
+        st.info("No Pexels results")
     else:
         cols = st.columns(5)
-        for i, url in enumerate(kept_pexels[:5]):
+        for i, photo in enumerate(pexels[:5]):
             with cols[i % 5]:
-                st.image(url, use_column_width=True)
+                src = (
+                    photo.get("src", {}).get("large2x")
+                    or photo.get("src", {}).get("large")
+                    or photo.get("src", {}).get("medium")
+                    or photo.get("src", {}).get("original")
+                )
+                cap = photo.get("photographer") or ""
+                if src:
+                    st.image(src, use_column_width=True, caption=cap)
 
     st.markdown('<hr class="section-divider"/>', unsafe_allow_html=True)
 
@@ -230,11 +176,19 @@ if submitted and query.strip():
     st.markdown("### TripAdvisor")
     if ta_error:
         st.warning(f"TripAdvisor error: {ta_error}")
-    if not kept_ta:
-        st.info("No TripAdvisor images after AI matching")
+    if not tripadvisor:
+        st.info("No TripAdvisor images")
     else:
-        cols = st.columns(6)
-        for i, url in enumerate(kept_ta):
-            with cols[i % 6]:
-                st.image(url, use_column_width=True)
+        original_urls = []
+        for p in tripadvisor:
+            u = extract_ta_original_url(p)
+            if u:
+                original_urls.append(u)
+        if not original_urls:
+            st.info("No original images found from TripAdvisor")
+        else:
+            cols = st.columns(6)
+            for i, url in enumerate(original_urls):
+                with cols[i % 6]:
+                    st.image(url, use_column_width=True)
 
