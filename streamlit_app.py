@@ -20,18 +20,6 @@ st.markdown(
 )
 
 @st.cache_data(ttl=3600)
-def pexels_search(query: str, per_page: int = 5):
-    api_key = st.secrets.get("PEXELS_API_KEY") or os.environ.get("PEXELS_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing PEXELS_API_KEY (Streamlit secret or env var)")
-    url = "https://api.pexels.com/v1/search"
-    params = {"query": query, "per_page": per_page}
-    resp = requests.get(url, headers={"Authorization": api_key}, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("photos", [])
-
-@st.cache_data(ttl=3600)
 def tripadvisor_search(query: str, max_results: int = 10):
     api_key = st.secrets.get("TRIPADVISOR_API_KEY") or os.environ.get("TRIPADVISOR_API_KEY")
     if not api_key:
@@ -49,7 +37,7 @@ def tripadvisor_search(query: str, max_results: int = 10):
 
     # Search locations for the query
     search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
-    search_params = {"key": api_key, "searchQuery": query, "language": "en"}
+    search_params = {"key": api_key, "searchQuery": query, "language": "en", "category": "attractions"}
     search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
     search_resp.raise_for_status()
     search_data = search_resp.json()
@@ -57,7 +45,8 @@ def tripadvisor_search(query: str, max_results: int = 10):
     if not locations:
         return []
 
-    max_locations = min(len(locations), max_results, 5)
+    # Cap locations to avoid excessive calls
+    max_locations = min(len(locations), max_results, 10)
     locations = locations[:max_locations]
 
     def fetch_photos_for_location(loc_id: str, limit: int) -> list:
@@ -120,6 +109,7 @@ def extract_ta_original_url(photo: dict):
             if isinstance(v, dict) and v.get("url"):
                 return v.get("url")
     if isinstance(images, list):
+        # Prefer largest resolution if available
         sorted_imgs = sorted(images, key=lambda x: (x.get("width", 0) or 0) * (x.get("height", 0) or 0), reverse=True)
         for item in sorted_imgs:
             url = item.get("url") or (item.get("source") or {}).get("url")
@@ -127,8 +117,8 @@ def extract_ta_original_url(photo: dict):
                 return url
     return None
 
-st.title("Place Photo Finder")
-st.markdown('<p class="subhead">Search a place to view images from Pexels and TripAdvisor.</p>', unsafe_allow_html=True)
+st.title("TripAdvisor Photo Finder")
+st.markdown('<p class="subhead">Type a place to view original photos from TripAdvisor.</p>', unsafe_allow_html=True)
 
 with st.form("search_form"):
     query = st.text_input("Search a place", value="Eiffel Tower", placeholder="Eiffel Tower")
@@ -137,42 +127,13 @@ with st.form("search_form"):
 if submitted and query.strip():
     q = query.strip()
     with st.spinner("Fetching images…"):
-        pexels = []
-        tripadvisor = []
-        pexels_error = None
         ta_error = None
         try:
-            pexels = pexels_search(q, per_page=10)
-        except Exception as e:
-            pexels_error = str(e)
-        try:
-            tripadvisor = tripadvisor_search(q, max_results=18)
+            tripadvisor = tripadvisor_search(q, max_results=10)
         except Exception as e:
             ta_error = str(e)
+            tripadvisor = []
 
-    # Pexels section
-    st.markdown("### Pexels")
-    if pexels_error:
-        st.warning(f"Pexels error: {pexels_error}")
-    if not pexels:
-        st.info("No Pexels results")
-    else:
-        cols = st.columns(5)
-        for i, photo in enumerate(pexels[:5]):
-            with cols[i % 5]:
-                src = (
-                    photo.get("src", {}).get("large2x")
-                    or photo.get("src", {}).get("large")
-                    or photo.get("src", {}).get("medium")
-                    or photo.get("src", {}).get("original")
-                )
-                cap = photo.get("photographer") or ""
-                if src:
-                    st.image(src, use_column_width=True, caption=cap)
-
-    st.markdown('<hr class="section-divider"/>', unsafe_allow_html=True)
-
-    # TripAdvisor section
     st.markdown("### TripAdvisor")
     if ta_error:
         st.warning(f"TripAdvisor error: {ta_error}")
@@ -187,8 +148,8 @@ if submitted and query.strip():
         if not original_urls:
             st.info("No original images found from TripAdvisor")
         else:
-            cols = st.columns(6)
+            cols = st.columns(5)
             for i, url in enumerate(original_urls):
-                with cols[i % 6]:
+                with cols[i % 5]:
                     st.image(url, use_column_width=True)
 
