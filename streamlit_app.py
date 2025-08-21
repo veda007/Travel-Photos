@@ -20,7 +20,7 @@ st.markdown(
 )
 
 @st.cache_data(ttl=3600)
-def tripadvisor_search(query: str, category: str = "attractions", limit: int = 5):
+def tripadvisor_search(query: str, limit: int = 3):
     api_key = st.secrets.get("TRIPADVISOR_API_KEY") or os.environ.get("TRIPADVISOR_API_KEY")
     if not api_key:
         raise RuntimeError("Missing TRIPADVISOR_API_KEY (Streamlit secret or env var)")
@@ -35,9 +35,9 @@ def tripadvisor_search(query: str, category: str = "attractions", limit: int = 5
         headers["Referer"] = app_origin
         headers["Origin"] = app_origin
 
-    # Search locations for the query (restrict by category)
+    # Search locations for the query (attractions category)
     search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
-    search_params = {"key": api_key, "searchQuery": query, "language": "en", "category": category}
+    search_params = {"key": api_key, "searchQuery": query, "language": "en", "category": "attractions"}
     search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
     search_resp.raise_for_status()
     search_data = search_resp.json()
@@ -91,51 +91,27 @@ with st.form("search_form"):
 if submitted and query.strip():
     q = query.strip()
     with st.spinner("Fetching images…"):
-        ta_err_attr = ta_err_geo = None
         try:
-            ta_attr = tripadvisor_search(q, category="attractions", limit=5)
+            ta_photos = tripadvisor_search(q, limit=3)
         except Exception as e:
-            ta_err_attr = str(e)
-            ta_attr = []
-        try:
-            ta_geo = tripadvisor_search(q, category="geos", limit=5)
-        except Exception as e:
-            ta_err_geo = str(e)
-            ta_geo = []
+            st.error(f"TripAdvisor error: {str(e)}")
+            ta_photos = []
 
-    # Attractions section
-    st.markdown("Attractions")
-    if ta_err_attr:
-        st.warning(f"TripAdvisor (attractions) error: {ta_err_attr}")
-    if not ta_attr:
-        st.info("No TripAdvisor attraction images")
+    # Display images
+    if not ta_photos:
+        st.info("No TripAdvisor images found")
     else:
-        attr_urls = []
-        for p in ta_attr:
+        photo_urls = []
+        for p in ta_photos:
             u = extract_ta_original_url(p)
             if u:
-                attr_urls.append(u)
-        cols = st.columns(5)
-        for i, url in enumerate(attr_urls):
-            with cols[i % 5]:
-                st.image(url, use_column_width=True)
-
-    st.markdown('<hr class="section-divider"/>', unsafe_allow_html=True)
-
-    # Geo section
-    st.markdown("Geo")
-    if ta_err_geo:
-        st.warning(f"TripAdvisor (geo) error: {ta_err_geo}")
-    if not ta_geo:
-        st.info("No TripAdvisor geo images")
-    else:
-        geo_urls = []
-        for p in ta_geo:
-            u = extract_ta_original_url(p)
-            if u:
-                geo_urls.append(u)
-        cols = st.columns(5)
-        for i, url in enumerate(geo_urls):
-            with cols[i % 5]:
-                st.image(url, use_column_width=True)
+                photo_urls.append(u)
+        
+        if photo_urls:
+            cols = st.columns(3)
+            for i, url in enumerate(photo_urls):
+                with cols[i % 3]:
+                    st.image(url, use_column_width=True)
+        else:
+            st.info("No valid images found")
 
