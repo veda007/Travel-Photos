@@ -3,8 +3,10 @@ import io
 import requests
 import streamlit as st
 from PIL import Image
-import imagehash
 import numpy as np
+import torch
+from torchvision import transforms
+from transformers import CLIPProcessor, CLIPModel
 
 st.set_page_config(page_title="Place Photo Finder", page_icon="📷", layout="wide")
 
@@ -23,64 +25,41 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Visual consensus filtering (no text) ---
+# --- Image understanding with CLIP ---
+_device = "cuda" if torch.cuda.is_available() else "cpu"
+@st.cache_resource(show_spinner=False)
+def load_clip():
+    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(_device)
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    return model, processor
 
-def _download_image(url: str) -> Image.Image | None:
-    try:
-        resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-        return img
-    except Exception:
-        return None
-
-
-def filter_by_visual_consensus(urls: list[str], max_keep: int | None = None) -> list[str]:
-    if not urls:
+@st.cache_data(ttl=3600)
+def score_images_with_clip(query: str, image_urls: list[str], threshold: float = 0.18) -> list[str]:
+    if not image_urls:
         return []
-    # Download and hash
-    hashes = []
-    valid = []
-    for u in urls:
-        img = _download_image(u)
-        if img is None:
-            continue
+    model, processor = load_clip()
+    kept = []
+    batch = []
+    mapping = []
+    # Process in small batches to save memory
+    for idx, url in enumerate(image_urls):
         try:
-            h = imagehash.phash(img)
-            hashes.append(h)
-            valid.append(u)
+            img = Image.open(io.BytesIO(requests.get(url, timeout=12).content)).convert("RGB")
+            batch.append(img)
+            mapping.append(url)
         except Exception:
             continue
-    if len(valid) <= 2:
-        # Not enough to form consensus; return what we have
-        return valid[:max_keep] if max_keep else valid
-
-    # Compute pairwise distances and pick medoid (image with minimal average distance)
-    n = len(valid)
-    dists = np.zeros((n, n), dtype=np.float32)
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = hashes[i] - hashes[j]  # Hamming distance
-            dists[i, j] = dists[j, i] = d
-    avg = dists.mean(axis=1)
-    medoid_idx = int(np.argmin(avg))
-
-    # Looser threshold: keep images within the 85th percentile distance to the medoid
-    medoid_dists = dists[medoid_idx]
-    thresh = float(np.percentile(medoid_dists, 85))
-    keep_indices = [i for i, dd in enumerate(medoid_dists) if dd <= thresh]
-
-    # Ensure we don't reject too many: keep at least ~70% of valid images
-    min_keep = max(int(0.7 * n), 3)
-    if len(keep_indices) < min_keep:
-        sorted_idx = list(np.argsort(medoid_dists))
-        keep_indices = sorted_idx[:min_keep]
-
-    kept = [valid[i] for i in keep_indices]
-    if max_keep:
-        kept = kept[:max_keep]
+        if len(batch) == 8 or idx == len(image_urls) - 1:
+            inputs = processor(text=[query]*len(batch), images=batch, return_tensors="pt", padding=True).to(_device)
+            with torch.no_grad():
+                outputs = model(**inputs)
+                # CLIP logits_per_image are similarity scores scaled; convert to probabilities
+                probs = outputs.logits_per_image.softmax(dim=1)[:, 0].detach().cpu().numpy()
+            for u, p in zip(mapping, probs):
+                if float(p) >= threshold:
+                    kept.append(u)
+            batch, mapping = [], []
     return kept
-
 
 @st.cache_data(ttl=3600)
 def pexels_search(query: str, per_page: int = 5):
@@ -120,7 +99,6 @@ def tripadvisor_search(query: str, max_results: int = 18):
     if not locations:
         return []
 
-    # Limit how many locations we consider to avoid excessive calls
     max_locations = min(len(locations), max_results, 10)
     locations = locations[:max_locations]
 
@@ -230,19 +208,19 @@ if submitted and query.strip():
         if u:
             ta_urls.append(u)
 
-    # Apply visual consensus filtering (no text)
-    filtered_pexels_urls = filter_by_visual_consensus(pexels_urls, max_keep=5)
-    filtered_ta_urls = filter_by_visual_consensus(ta_urls, max_keep=18)
+    # CLIP-based filtering against the text query
+    kept_pexels = score_images_with_clip(q, pexels_urls, threshold=0.18)
+    kept_ta = score_images_with_clip(q, ta_urls, threshold=0.18)
 
     # Pexels section
     st.markdown("### Pexels")
     if pexels_error:
         st.warning(f"Pexels error: {pexels_error}")
-    if not filtered_pexels_urls:
-        st.info("No Pexels results after visual filtering")
+    if not kept_pexels:
+        st.info("No Pexels results after AI matching")
     else:
         cols = st.columns(5)
-        for i, url in enumerate(filtered_pexels_urls):
+        for i, url in enumerate(kept_pexels[:5]):
             with cols[i % 5]:
                 st.image(url, use_column_width=True)
 
@@ -252,11 +230,11 @@ if submitted and query.strip():
     st.markdown("### TripAdvisor")
     if ta_error:
         st.warning(f"TripAdvisor error: {ta_error}")
-    if not filtered_ta_urls:
-        st.info("No TripAdvisor images after visual filtering")
+    if not kept_ta:
+        st.info("No TripAdvisor images after AI matching")
     else:
         cols = st.columns(6)
-        for i, url in enumerate(filtered_ta_urls):
+        for i, url in enumerate(kept_ta):
             with cols[i % 6]:
                 st.image(url, use_column_width=True)
 
