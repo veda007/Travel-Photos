@@ -1,6 +1,10 @@
 import os
+import io
 import requests
 import streamlit as st
+from PIL import Image
+import imagehash
+import numpy as np
 
 st.set_page_config(page_title="Place Photo Finder", page_icon="📷", layout="wide")
 
@@ -18,6 +22,65 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# --- Visual consensus filtering (no text) ---
+
+def _download_image(url: str) -> Image.Image | None:
+    try:
+        resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        return img
+    except Exception:
+        return None
+
+
+def filter_by_visual_consensus(urls: list[str], max_keep: int | None = None) -> list[str]:
+    if not urls:
+        return []
+    # Download and hash
+    hashes = []
+    valid = []
+    for u in urls:
+        img = _download_image(u)
+        if img is None:
+            continue
+        try:
+            h = imagehash.phash(img)
+            hashes.append(h)
+            valid.append(u)
+        except Exception:
+            continue
+    if len(valid) <= 2:
+        # Not enough to form consensus; return what we have
+        return valid[:max_keep] if max_keep else valid
+
+    # Compute pairwise distances and pick medoid (image with minimal average distance)
+    n = len(valid)
+    dists = np.zeros((n, n), dtype=np.float32)
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = hashes[i] - hashes[j]  # Hamming distance
+            dists[i, j] = dists[j, i] = d
+    avg = dists.mean(axis=1)
+    medoid_idx = int(np.argmin(avg))
+
+    # Looser threshold: keep images within the 85th percentile distance to the medoid
+    medoid_dists = dists[medoid_idx]
+    thresh = float(np.percentile(medoid_dists, 85))
+    keep_indices = [i for i, dd in enumerate(medoid_dists) if dd <= thresh]
+
+    # Ensure we don't reject too many: keep at least ~70% of valid images
+    min_keep = max(int(0.7 * n), 3)
+    if len(keep_indices) < min_keep:
+        sorted_idx = list(np.argsort(medoid_dists))
+        keep_indices = sorted_idx[:min_keep]
+
+    kept = [valid[i] for i in keep_indices]
+    if max_keep:
+        kept = kept[:max_keep]
+    return kept
+
 
 @st.cache_data(ttl=3600)
 def pexels_search(query: str, per_page: int = 5):
@@ -50,12 +113,8 @@ def tripadvisor_search(query: str, max_results: int = 18):
     # Search locations for the query
     search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
     search_params = {"key": api_key, "searchQuery": query, "language": "en"}
-    try:
-        search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
-        search_resp.raise_for_status()
-    except requests.HTTPError as e:
-        detail = getattr(e.response, "text", "") if hasattr(e, "response") and e.response is not None else ""
-        raise RuntimeError(f"TripAdvisor search failed ({e}). {detail[:300]}")
+    search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
+    search_resp.raise_for_status()
     search_data = search_resp.json()
     locations = (search_data.get("data") or [])
     if not locations:
@@ -71,8 +130,7 @@ def tripadvisor_search(query: str, max_results: int = 18):
         try:
             resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
             resp.raise_for_status()
-        except requests.HTTPError as e:
-            # Skip this location on error rather than failing the whole query
+        except requests.HTTPError:
             return []
         data = resp.json()
         return data.get("data", [])
@@ -81,7 +139,6 @@ def tripadvisor_search(query: str, max_results: int = 18):
     num_locations = len(locations)
 
     if num_locations >= max_results:
-        # Enough locations: take the first image from each of the first max_results locations
         for loc in locations[:max_results]:
             loc_id = loc.get("location_id")
             if not loc_id:
@@ -91,16 +148,12 @@ def tripadvisor_search(query: str, max_results: int = 18):
                 photos.append(imgs[0])
         return photos
 
-    # Not enough locations: distribute multiple images per location to reach max_results
     base = max_results // num_locations
     rem = max_results % num_locations
-    # Ensure at least 1 per location
     per_loc_counts = [base] * num_locations
     for i in range(rem):
         per_loc_counts[i] += 1
 
-    # If base is 0 (when max_results < num_locations) it would have been handled earlier
-    # Now fetch for each location according to its allocated count
     for loc, count in zip(locations, per_loc_counts):
         loc_id = loc.get("location_id")
         if not loc_id or count <= 0:
@@ -151,7 +204,7 @@ if submitted and query.strip():
         pexels_error = None
         ta_error = None
         try:
-            pexels = pexels_search(q, per_page=5)
+            pexels = pexels_search(q, per_page=10)
         except Exception as e:
             pexels_error = str(e)
         try:
@@ -159,45 +212,51 @@ if submitted and query.strip():
         except Exception as e:
             ta_error = str(e)
 
+    # Build URL lists
+    pexels_urls = []
+    for photo in pexels:
+        src = (
+            photo.get("src", {}).get("large2x")
+            or photo.get("src", {}).get("large")
+            or photo.get("src", {}).get("medium")
+            or photo.get("src", {}).get("original")
+        )
+        if src:
+            pexels_urls.append(src)
+
+    ta_urls = []
+    for p in tripadvisor:
+        u = extract_ta_original_url(p)
+        if u:
+            ta_urls.append(u)
+
+    # Apply visual consensus filtering (no text)
+    filtered_pexels_urls = filter_by_visual_consensus(pexels_urls, max_keep=5)
+    filtered_ta_urls = filter_by_visual_consensus(ta_urls, max_keep=18)
+
     # Pexels section
     st.markdown("### Pexels")
     if pexels_error:
         st.warning(f"Pexels error: {pexels_error}")
-    if not pexels:
-        st.info("No Pexels results")
+    if not filtered_pexels_urls:
+        st.info("No Pexels results after visual filtering")
     else:
         cols = st.columns(5)
-        for i, photo in enumerate(pexels[:5]):
+        for i, url in enumerate(filtered_pexels_urls):
             with cols[i % 5]:
-                src = (
-                    photo.get("src", {}).get("large2x")
-                    or photo.get("src", {}).get("large")
-                    or photo.get("src", {}).get("medium")
-                    or photo.get("src", {}).get("original")
-                )
-                cap = photo.get("photographer") or ""
-                if src:
-                    st.image(src, use_column_width=True, caption=cap)
+                st.image(url, use_column_width=True)
 
     st.markdown('<hr class="section-divider"/>', unsafe_allow_html=True)
 
-    # TripAdvisor section (original images only)
+    # TripAdvisor section
     st.markdown("### TripAdvisor")
     if ta_error:
         st.warning(f"TripAdvisor error: {ta_error}")
-    if not tripadvisor:
-        st.info("No TripAdvisor images")
+    if not filtered_ta_urls:
+        st.info("No TripAdvisor images after visual filtering")
     else:
-        original_urls = []
-        for p in tripadvisor:
-            url = extract_ta_original_url(p)
-            if url:
-                original_urls.append(url)
-        if not original_urls:
-            st.info("No original images found from TripAdvisor")
-        else:
-            cols = st.columns(5)
-            for i, u in enumerate(original_urls):
-                with cols[i % 5]:
-                    st.image(u, use_column_width=True)
+        cols = st.columns(6)
+        for i, url in enumerate(filtered_ta_urls):
+            with cols[i % 6]:
+                st.image(url, use_column_width=True)
 
