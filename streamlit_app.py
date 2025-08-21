@@ -26,10 +26,15 @@ def tripadvisor_search(query: str, max_results: int = 10):
     if not api_key:
         raise RuntimeError("Missing TRIPADVISOR_API_KEY (Streamlit secret or env var)")
 
+    app_origin = st.secrets.get("TA_REFERER") or os.environ.get("TA_REFERER")
     headers = {
         "accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
     }
+    if app_origin:
+        headers["Referer"] = app_origin
+        headers["Origin"] = app_origin
 
     # Step 1: Search for locations
     search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
@@ -38,8 +43,12 @@ def tripadvisor_search(query: str, max_results: int = 10):
         "searchQuery": query,
         "language": "en"
     }
-    search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
-    search_resp.raise_for_status()
+    try:
+        search_resp = requests.get(search_url, headers=headers, params=search_params, timeout=15)
+        search_resp.raise_for_status()
+    except requests.HTTPError as e:
+        detail = getattr(e.response, "text", "") if hasattr(e, "response") and e.response is not None else ""
+        raise RuntimeError(f"TripAdvisor search failed ({e}). {detail[:300]}")
     search_data = search_resp.json()
 
     if not search_data.get("data"):
@@ -50,10 +59,15 @@ def tripadvisor_search(query: str, max_results: int = 10):
     photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{location_id}/photos"
     photos_params = {
         "key": api_key,
-        "language": "en"
+        "language": "en",
+        "limit": max_results
     }
-    photos_resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
-    photos_resp.raise_for_status()
+    try:
+        photos_resp = requests.get(photos_url, headers=headers, params=photos_params, timeout=15)
+        photos_resp.raise_for_status()
+    except requests.HTTPError as e:
+        detail = getattr(e.response, "text", "") if hasattr(e, "response") and e.response is not None else ""
+        raise RuntimeError(f"TripAdvisor photos failed ({e}). {detail[:300]}")
     photos_data = photos_resp.json()
 
     return photos_data.get("data", [])[:max_results]
